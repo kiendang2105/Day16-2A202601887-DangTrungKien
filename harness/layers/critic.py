@@ -79,16 +79,51 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list) or not claims:
+            return report
+
+        kept = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text")
+            if not isinstance(text, str):
+                continue
+
+            if ctx.saw(text):
+                kept.append(claim)
+                continue
+
+            parts = text.split(" và ", 1)
+            if len(parts) != 2:
+                continue
+            left, right = (part.strip() for part in parts)
+            left_doc = self._source_for(ctx, left)
+            right_doc = self._source_for(ctx, right)
+            if left_doc is not None and right_doc is not None and left_doc != right_doc:
+                kept.extend((
+                    {"text": left, "doc_id": left_doc},
+                    {"text": right, "doc_id": right_doc},
+                ))
+                report["abstain"] = True
+
+        report["claims"] = kept
+        if kept:
+            report["citations"] = sorted(
+                {claim["doc_id"] for claim in kept if isinstance(claim.get("doc_id"), str)}
+            )
+        else:
+            report["abstain"] = True
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ để trả lời câu hỏi này."
+        return report
+
+    @staticmethod
+    def _source_for(ctx, text):
+        if not text or not ctx.saw(text) or ctx.corpus is None:
+            return None
+        for doc in ctx.corpus.docs:
+            if doc.body in ctx.observed_text and text in doc.body:
+                return doc.doc_id
+        return None

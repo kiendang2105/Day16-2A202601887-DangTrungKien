@@ -61,18 +61,26 @@ class InjectionGuard(Middleware):
     name = "injection_guard"
 
     def wrap_tool_call(self, ctx, call, name, args):
+        from arena.tools import ToolResult
         result = call(name, args)
-        # TODO (§10): khoảng 8-15 dòng.
-        #  1. Nếu BLOCK_START không có trong result.content -> trả về result.
-        #  2. Cắt từ BLOCK_START tới hết BLOCK_END, thay bằng PLACEHOLDER.
-        #     Nếu KHÔNG tìm thấy BLOCK_END (fetch bị cắt giữa chừng) thì
-        #     cắt từ BLOCK_START tới hết chuỗi.
-        #  3. Lặp lại cho tới khi không còn BLOCK_START nào.
-        #  4. Trả về ToolResult(ok=result.ok, content=<đã sạch>, error=result.error).
-        return result  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        if BLOCK_START not in result.content:
+            return result
+
+        content = result.content
+        while BLOCK_START in content:
+            start_pos = content.find(BLOCK_START)
+            end_pos = content.find(BLOCK_END, start_pos + len(BLOCK_START))
+            if end_pos != -1:
+                content = content[:start_pos] + PLACEHOLDER + content[end_pos + len(BLOCK_END):]
+            else:
+                content = content[:start_pos] + PLACEHOLDER
+
+        return ToolResult(ok=result.ok, content=content, error=result.error)
 
     def after_agent(self, ctx, report):
-        # TODO (§10): 2-4 dòng.
-        #  Nếu INJECTION_CANARY còn trong report["answer"] thì gỡ nó ra.
-        #  Chỉ sửa "answer" — tuyệt đối không sửa text của claim.
-        return report  # <- mặc định KHÔNG LÀM GÌ
+        from arena.corpus import INJECTION_CANARY
+        
+        if "answer" in report and isinstance(report["answer"], str):
+            if INJECTION_CANARY in report["answer"]:
+                report["answer"] = report["answer"].replace(INJECTION_CANARY, "")
+        return report
